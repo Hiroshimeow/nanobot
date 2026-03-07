@@ -112,6 +112,7 @@ class TelegramChannel(BaseChannel):
     BOT_COMMANDS = [
         BotCommand("start", "Start the bot"),
         BotCommand("new", "Start a new conversation"),
+        BotCommand("swarm", "Invoke Agent Swarm for complex tasks"),
         BotCommand("stop", "Stop the current task"),
         BotCommand("help", "Show available commands"),
     ]
@@ -150,12 +151,14 @@ class TelegramChannel(BaseChannel):
         # Add command handlers
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("new", self._forward_command))
+        self._app.add_handler(CommandHandler("swarm", self._forward_command))
+        self._app.add_handler(CommandHandler("stop", self._forward_command))
         self._app.add_handler(CommandHandler("help", self._on_help))
 
-        # Add message handler for text, photos, voice, documents
+        # Add message handler for text, photos, voice, documents AND VIDEO
         self._app.add_handler(
             MessageHandler(
-                (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL)
+                (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.VIDEO | filters.Document.ALL)
                 & ~filters.COMMAND,
                 self._on_message
             )
@@ -217,6 +220,8 @@ class TelegramChannel(BaseChannel):
             return "voice"
         if ext in ("mp3", "m4a", "wav", "aac"):
             return "audio"
+        if ext in ("mp4", "avi", "mov", "mkv"):
+            return "video"
         return "document"
 
     async def send(self, msg: OutboundMessage) -> None:
@@ -250,8 +255,11 @@ class TelegramChannel(BaseChannel):
                     "photo": self._app.bot.send_photo,
                     "voice": self._app.bot.send_voice,
                     "audio": self._app.bot.send_audio,
+                    "video": self._app.bot.send_video,
                 }.get(media_type, self._app.bot.send_document)
-                param = "photo" if media_type == "photo" else media_type if media_type in ("voice", "audio") else "document"
+                
+                param = "photo" if media_type == "photo" else media_type if media_type in ("voice", "audio", "video") else "document"
+                
                 with open(media_path, 'rb') as f:
                     await sender(
                         chat_id=chat_id,
@@ -308,6 +316,7 @@ class TelegramChannel(BaseChannel):
         await update.message.reply_text(
             "🐈 nanobot commands:\n"
             "/new — Start a new conversation\n"
+            "/swarm — Invoke Agent Swarm for complex tasks\n"
             "/stop — Stop the current task\n"
             "/help — Show available commands"
         )
@@ -322,6 +331,10 @@ class TelegramChannel(BaseChannel):
         """Forward slash commands to the bus for unified handling in AgentLoop."""
         if not update.message or not update.effective_user:
             return
+        
+        # [FIX] Start typing indicator for commands
+        self._start_typing(str(update.message.chat_id))
+        
         await self._handle_message(
             sender_id=self._sender_id(update.effective_user),
             chat_id=str(update.message.chat_id),
@@ -364,6 +377,9 @@ class TelegramChannel(BaseChannel):
         elif message.audio:
             media_file = message.audio
             media_type = "audio"
+        elif message.video:
+            media_file = message.video
+            media_type = "video"
         elif message.document:
             media_file = message.document
             media_type = "file"
@@ -496,9 +512,10 @@ class TelegramChannel(BaseChannel):
             ext_map = {
                 "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
                 "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/mp4": ".m4a",
+                "video/mp4": ".mp4",
             }
             if mime_type in ext_map:
                 return ext_map[mime_type]
 
-        type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "file": ""}
+        type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "video": ".mp4", "file": ""}
         return type_map.get(media_type, "")
