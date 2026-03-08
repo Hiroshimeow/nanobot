@@ -47,7 +47,7 @@ class AgentLoop:
     5. Sends responses back
     """
 
-    _TOOL_RESULT_MAX_CHARS = 500
+    _TOOL_RESULT_MAX_CHARS = 5000
 
     def __init__(
         self,
@@ -445,8 +445,41 @@ class AgentLoop:
             return OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands",
+                content="🐈 nanobot commands:\n/new — Start a new conversation\n/mode — Switch agent mode\n/stop — Stop the current task\n/help — Show available commands",
             )
+
+        if cmd.startswith("/mode"):
+            if not isinstance(self.provider, ProvidersManager):
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="Agent modes are not supported by the current provider.")
+            
+            parts = msg.content.split()
+            if len(parts) == 1:
+                modes_info = self.provider.list_models()
+                current = self.provider.get_default_mode()
+                content = "Available modes:\n"
+                for m in modes_info:
+                    is_current = "(current)" if m["name"] == current else ""
+                    content += f"- **{m['name']}**: {m['describe']} {is_current}\n"
+                content += "\nUse `/mode <name>` to switch."
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+            
+            new_mode = parts[1].lower()
+            available_modes = [m["name"] for m in self.provider.list_models()]
+            if new_mode not in available_modes:
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"❌ Unknown mode: {new_mode}. Available: {', '.join(available_modes)}")
+            
+            try:
+                self.provider.set_default_mode(new_mode)
+                # Update local model reference to match the new mode
+                new_model_id = self.provider.get_model(new_mode)
+                self.model = new_model_id
+                # Also update subagent manager to use the new model
+                if hasattr(self, "subagents"):
+                    self.subagents.model = new_model_id
+                
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"✅ Switched to mode: {new_mode} ({new_model_id})")
+            except Exception as e:
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"❌ Error: {str(e)}")
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if unconsolidated >= self.memory_window and session.key not in self._consolidating:
