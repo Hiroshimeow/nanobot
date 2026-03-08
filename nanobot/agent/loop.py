@@ -453,20 +453,48 @@ class AgentLoop:
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="Agent modes are not supported by the current provider.")
             
             parts = msg.content.split()
+            available_modes = [m["name"] for m in self.provider.list_models()]
+
+            # Helper to create keyboard
+            def create_mode_keyboard():
+                keyboard = []
+                row = []
+                for m in available_modes:
+                    row.append({"text": m, "callback_data": f"/mode {m}"})
+                    if len(row) == 2: # 2 buttons per row
+                        keyboard.append(row)
+                        row = []
+                if row:
+                    keyboard.append(row)
+                return keyboard
+
             if len(parts) == 1:
                 modes_info = self.provider.list_models()
                 current = self.provider.get_default_mode()
-                content = "Available modes:\n"
+                current_model = self.provider.get_model(current)
+                
+                content = f"🤖 **Current Mode**: `{current}` ({current_model})\n\n"
+                content += "Available modes:\n"
                 for m in modes_info:
-                    is_current = "(current)" if m["name"] == current else ""
-                    content += f"- **{m['name']}**: {m['describe']} {is_current}\n"
-                content += "\nUse `/mode <name>` to switch."
-                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+                    is_current = "✅ " if m["name"] == current else "- "
+                    content += f"{is_current}**{m['name']}**: {m['describe']}\n"
+                content += "\nSelect a mode to switch:"
+                return OutboundMessage(
+                    channel=msg.channel, 
+                    chat_id=msg.chat_id, 
+                    content=content,
+                    metadata={"keyboard": create_mode_keyboard()}
+                )
             
             new_mode = parts[1].lower()
-            available_modes = [m["name"] for m in self.provider.list_models()]
             if new_mode not in available_modes:
-                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=f"❌ Unknown mode: {new_mode}. Available: {', '.join(available_modes)}")
+                current = self.provider.get_default_mode()
+                return OutboundMessage(
+                    channel=msg.channel, 
+                    chat_id=msg.chat_id, 
+                    content=f"❌ Unknown mode: `{new_mode}`.\n🤖 **Current Mode**: `{current}`\n\nPlease select from available modes:",
+                    metadata={"keyboard": create_mode_keyboard()}
+                )
             
             try:
                 self.provider.set_default_mode(new_mode)

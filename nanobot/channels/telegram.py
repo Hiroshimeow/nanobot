@@ -8,8 +8,8 @@ import time
 import unicodedata
 
 from loguru import logger
-from telegram import BotCommand, ReplyParameters, Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import BotCommand, ReplyParameters, Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 from telegram.request import HTTPXRequest
 
 from nanobot.bus.events import OutboundMessage
@@ -200,6 +200,7 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("new", self._forward_command))
         self._app.add_handler(CommandHandler("mode", self._forward_command))
         self._app.add_handler(CommandHandler("help", self._on_help))
+        self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
 
         # Add message handler for text, photos, voice, documents
         self._app.add_handler(
@@ -228,7 +229,7 @@ class TelegramChannel(BaseChannel):
 
         # Start polling (this runs until stopped)
         await self._app.updater.start_polling(
-            allowed_updates=["message"],
+            allowed_updates=["message", "callback_query"],
             drop_pending_updates=True  # Ignore old messages on startup
         )
 
@@ -321,32 +322,41 @@ class TelegramChannel(BaseChannel):
         # Send text content
         if msg.content and msg.content != "[empty message]":
             is_progress = msg.metadata.get("_progress", False)
+            
+            reply_markup = None
+            if "keyboard" in msg.metadata:
+                keyboard = []
+                for row in msg.metadata["keyboard"]:
+                    keyboard.append([InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]) for btn in row])
+                reply_markup = InlineKeyboardMarkup(keyboard)
 
             for chunk in split_message(msg.content, TELEGRAM_MAX_MESSAGE_LEN):
                 # Final response: simulate streaming via draft, then persist
                 if not is_progress:
-                    await self._send_with_streaming(chat_id, chunk, reply_params)
+                    await self._send_with_streaming(chat_id, chunk, reply_params, reply_markup)
                 else:
-                    await self._send_text(chat_id, chunk, reply_params)
+                    await self._send_text(chat_id, chunk, reply_params, reply_markup)
 
-    async def _send_text(self, chat_id: int, text: str, reply_params=None) -> None:
+    async def _send_text(self, chat_id: int, text: str, reply_params=None, reply_markup=None) -> None:
         """Send a plain text message with HTML fallback."""
         try:
             html = _markdown_to_telegram_html(text)
             await self._app.bot.send_message(
                 chat_id=chat_id, text=html, parse_mode="HTML",
                 reply_parameters=reply_params,
+                reply_markup=reply_markup,
             )
         except Exception as e:
             logger.warning("HTML parse failed, falling back to plain text: {}", e)
             try:
                 await self._app.bot.send_message(
                     chat_id=chat_id, text=text, reply_parameters=reply_params,
+                    reply_markup=reply_markup,
                 )
             except Exception as e2:
                 logger.error("Error sending Telegram message: {}", e2)
 
-    async def _send_with_streaming(self, chat_id: int, text: str, reply_params=None) -> None:
+    async def _send_with_streaming(self, chat_id: int, text: str, reply_params=None, reply_markup=None) -> None:
         """Simulate streaming via send_message_draft, then persist with send_message."""
         draft_id = int(time.time() * 1000) % (2**31)
         try:
@@ -362,7 +372,7 @@ class TelegramChannel(BaseChannel):
             await asyncio.sleep(0.15)
         except Exception:
             pass
-        await self._send_text(chat_id, text, reply_params)
+        await self._send_text(chat_id, text, reply_params, reply_markup)
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
@@ -577,3 +587,25 @@ class TelegramChannel(BaseChannel):
 
         type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "file": ""}
         return type_map.get(media_type, "")
+
+    async def _on_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline keyboard button presses."""
+        try:
+            query = update.callback_query
+            
+            # Show a loading toast to the user immediately
+            await query.answer(text="Processing...", show_alert=False)
+
+            if not query.message or not query.from_user:
+                return
+
+            logger.info(f"Received callback query: {query.data} from {query.from_user.id}")
+
+            # Forward the callback data as a command to the bus
+            await self._handle_message(
+                sender_id=self._sender_id(query.from_user),
+                chat_id=str(query.message.chat_id),
+                content=query.data,
+            )
+        except Exception as e:
+            logger.error(f"Error handling callback query: {e}")
