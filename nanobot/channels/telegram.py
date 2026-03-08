@@ -113,6 +113,7 @@ class TelegramChannel(BaseChannel):
         BotCommand("start", "Start the bot"),
         BotCommand("new", "Start a new conversation"),
         BotCommand("swarm", "Invoke Agent Swarm for complex tasks"),
+        BotCommand("restart", "Restart the nanobot gateway"),
         BotCommand("stop", "Stop the current task"),
         BotCommand("help", "Show available commands"),
     ]
@@ -150,6 +151,7 @@ class TelegramChannel(BaseChannel):
 
         # Add command handlers
         self._app.add_handler(CommandHandler("start", self._on_start))
+        self._app.add_handler(CommandHandler("restart", self._on_restart))
         self._app.add_handler(CommandHandler("new", self._forward_command))
         self._app.add_handler(CommandHandler("swarm", self._forward_command))
         self._app.add_handler(CommandHandler("stop", self._forward_command))
@@ -296,6 +298,40 @@ class TelegramChannel(BaseChannel):
                         )
                     except Exception as e2:
                         logger.error("Error sending Telegram message: {}", e2)
+
+    async def _on_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /restart command directly for maximum priority."""
+        if not update.message or not update.effective_user:
+            return
+        
+        import os
+        sender_id = self._sender_id(update.effective_user)
+        # Check if user is allowed (Su's ID is 1182384125)
+        if str(update.effective_user.id) not in self.config.allow_from and sender_id not in self.config.allow_from:
+            await update.message.reply_text("❌ Unauthorized.")
+            return
+
+        await update.message.reply_text("🔄 Restarting nanobot gateway... Please wait about 10 seconds.")
+        
+        import subprocess
+        import sys
+        from pathlib import Path
+        
+        # Script is located in nanobot/utils/
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent.parent
+        restart_script = project_root / "nanobot" / "utils" / "restart_gateway.py"
+        
+        # Launch the restart script in a new process and exit
+        subprocess.Popen(
+            [sys.executable, str(restart_script)],
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            close_fds=True
+        )
+        
+        # Force exit the current process
+        logger.warning("Restart triggered by user. Shutting down...")
+        os._exit(0)
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
