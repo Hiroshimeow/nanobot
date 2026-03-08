@@ -9,8 +9,6 @@ from pathlib import Path
 
 # Force UTF-8 encoding for Windows console
 if sys.platform == "win32":
-    import locale
-
     if sys.stdout.encoding != "utf-8":
         os.environ["PYTHONIOENCODING"] = "utf-8"
         # Re-open stdout/stderr with UTF-8 encoding
@@ -31,6 +29,7 @@ from rich.table import Table
 from rich.text import Text
 
 from nanobot import __logo__, __version__
+from nanobot.config.paths import get_workspace_path
 from nanobot.config.schema import Config
 from nanobot.utils.helpers import sync_workspace_templates
 
@@ -62,7 +61,6 @@ def _flush_pending_tty_input() -> None:
 
     try:
         import termios
-
         termios.tcflush(fd, termios.TCIFLUSH)
         return
     except Exception:
@@ -85,7 +83,6 @@ def _restore_terminal() -> None:
         return
     try:
         import termios
-
         termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _SAVED_TERM_ATTRS)
     except Exception:
         pass
@@ -98,18 +95,19 @@ def _init_prompt_session() -> None:
     # Save terminal state so we can restore it on exit
     try:
         import termios
-
         _SAVED_TERM_ATTRS = termios.tcgetattr(sys.stdin.fileno())
     except Exception:
         pass
 
-    history_file = Path.home() / ".nanobot" / "history" / "cli_history"
+    from nanobot.config.paths import get_cli_history_path
+
+    history_file = get_cli_history_path()
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
     _PROMPT_SESSION = PromptSession(
         history=FileHistory(str(history_file)),
         enable_open_in_editor=False,
-        multiline=False,  # Enter submits (single line mode)
+        multiline=False,   # Enter submits (single line mode)
     )
 
 
@@ -155,7 +153,9 @@ def version_callback(value: bool):
 
 @app.callback()
 def main(
-    version: bool = typer.Option(None, "--version", "-v", callback=version_callback, is_eager=True),
+    version: bool = typer.Option(
+        None, "--version", "-v", callback=version_callback, is_eager=True
+    ),
 ):
     """nanobot - Personal AI Assistant."""
     pass
@@ -171,16 +171,13 @@ def onboard():
     """Initialize nanobot configuration and workspace."""
     from nanobot.config.loader import get_config_path, load_config, save_config
     from nanobot.config.schema import Config
-    from nanobot.utils.helpers import get_workspace_path
 
     config_path = get_config_path()
 
     if config_path.exists():
         console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
         console.print("  [bold]y[/bold] = overwrite with defaults (existing values will be lost)")
-        console.print(
-            "  [bold]N[/bold] = refresh config, keeping existing values and adding new fields"
-        )
+        console.print("  [bold]N[/bold] = refresh config, keeping existing values and adding new fields")
         if typer.confirm("Overwrite?"):
             config = Config()
             save_config(config)
@@ -188,9 +185,7 @@ def onboard():
         else:
             config = load_config()
             save_config(config)
-            console.print(
-                f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)"
-            )
+            console.print(f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)")
     else:
         save_config(Config())
         console.print(f"[green]✓[/green] Created config at {config_path}")
@@ -208,16 +203,14 @@ def onboard():
     console.print("\nNext steps:")
     console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
     console.print("     Get one at: https://openrouter.ai/keys")
-    console.print('  2. Chat: [cyan]nanobot agent -m "Hello!"[/cyan]')
-    console.print(
-        "\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]"
-    )
+    console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
+    console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
 
 
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
-    from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+    from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
 
     def _create_provider(model):
         provider_name = config.get_provider_name(model)
@@ -229,7 +222,6 @@ def _make_provider(config: Config):
 
         # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
         from nanobot.providers.custom_provider import CustomProvider
-
         if provider_name == "custom":
             return CustomProvider(
                 api_key=p.api_key if p else "no-key",
@@ -241,12 +233,10 @@ def _make_provider(config: Config):
         if provider_name == "azure_openai":
             if not p or not p.api_key or not p.api_base:
                 console.print("[red]Error: Azure OpenAI requires api_key and api_base.[/red]")
-                console.print(
-                    "Set them in ~/.nanobot/config.json under providers.azure_openai section"
-                )
+                console.print("Set them in ~/.nanobot/config.json under providers.azure_openai section")
                 console.print("Use the model field to specify the deployment name.")
                 raise typer.Exit(1)
-
+            
             return AzureOpenAIProvider(
                 api_key=p.api_key,
                 api_base=p.api_base,
@@ -255,13 +245,8 @@ def _make_provider(config: Config):
 
         from nanobot.providers.litellm_provider import LiteLLMProvider
         from nanobot.providers.registry import find_by_name
-
         spec = find_by_name(provider_name)
-        if (
-            not model.startswith("bedrock/")
-            and not (p and p.api_key)
-            and not (spec and spec.is_oauth)
-        ):
+        if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):
             console.print("[red]Error: No API key configured.[/red]")
             console.print("Set one in ~/.nanobot/config.json under providers section")
             raise typer.Exit(1)
@@ -285,6 +270,25 @@ def _make_provider(config: Config):
     return ProvidersManager(config, modes, default_mode=config.agents.modes.default_mode)
 
 
+def _load_runtime_config(config: str | None = None, workspace: str | None = None) -> Config:
+    """Load config and optionally override the active workspace."""
+    from nanobot.config.loader import load_config, set_config_path
+
+    config_path = None
+    if config:
+        config_path = Path(config).expanduser().resolve()
+        if not config_path.exists():
+            console.print(f"[red]Error: Config file not found: {config_path}[/red]")
+            raise typer.Exit(1)
+        set_config_path(config_path)
+        console.print(f"[dim]Using config: {config_path}[/dim]")
+
+    loaded = load_config(config_path)
+    if workspace:
+        loaded.agents.defaults.workspace = workspace
+    return loaded
+
+
 # ============================================================================
 # Gateway / Server
 # ============================================================================
@@ -294,14 +298,14 @@ def _make_provider(config: Config):
 def gateway(
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
-    config: str | None = typer.Option(None, "--config", "-c", help="Config file path"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Start the nanobot gateway."""
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.config.loader import load_config
+    from nanobot.config.paths import get_cron_dir
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
@@ -312,10 +316,7 @@ def gateway(
 
         logging.basicConfig(level=logging.DEBUG)
 
-    config_path = Path(config) if config else None
-    config = load_config(config_path)
-    if workspace:
-        config.agents.defaults.workspace = workspace
+    config = _load_runtime_config(config, workspace)
 
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
     sync_workspace_templates(config.workspace_path)
@@ -324,8 +325,7 @@ def gateway(
     session_manager = SessionManager(config.workspace_path)
 
     # Create cron service first (callback set after agent creation)
-    # Use workspace path for per-instance cron store
-    cron_store_path = config.workspace_path / "cron" / "jobs.json"
+    cron_store_path = get_cron_dir() / "jobs.json"
     cron = CronService(cron_store_path)
 
     # Create agent with cron service
@@ -492,29 +492,27 @@ def gateway(
 def agent(
     message: str = typer.Option(None, "--message", "-m", help="Message to send to the agent"),
     session_id: str = typer.Option("cli:direct", "--session", "-s", help="Session ID"),
-    markdown: bool = typer.Option(
-        True, "--markdown/--no-markdown", help="Render assistant output as Markdown"
-    ),
-    logs: bool = typer.Option(
-        False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"
-    ),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Config file path"),
+    markdown: bool = typer.Option(True, "--markdown/--no-markdown", help="Render assistant output as Markdown"),
+    logs: bool = typer.Option(False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"),
 ):
     """Interact with the agent directly."""
     from loguru import logger
 
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
-    from nanobot.config.loader import get_data_dir, load_config
+    from nanobot.config.paths import get_cron_dir
     from nanobot.cron.service import CronService
 
-    config = load_config()
+    config = _load_runtime_config(config, workspace)
     sync_workspace_templates(config.workspace_path)
 
     bus = MessageBus()
     provider = _make_provider(config)
 
     # Create cron service for tool usage (no callback needed for CLI unless running)
-    cron_store_path = get_data_dir() / "cron" / "jobs.json"
+    cron_store_path = get_cron_dir() / "jobs.json"
     cron = CronService(cron_store_path)
 
     if logs:
@@ -754,7 +752,9 @@ def _get_bridge_dir() -> Path:
     import subprocess
 
     # User's bridge location
-    user_bridge = Path.home() / ".nanobot" / "bridge"
+    from nanobot.config.paths import get_bridge_install_dir
+
+    user_bridge = get_bridge_install_dir()
 
     # Check if already built
     if (user_bridge / "dist" / "index.js").exists():
@@ -812,6 +812,7 @@ def channels_login():
     import subprocess
 
     from nanobot.config.loader import load_config
+    from nanobot.config.paths import get_runtime_subdir
 
     config = load_config()
     bridge_dir = _get_bridge_dir()
@@ -822,6 +823,7 @@ def channels_login():
     env = {**os.environ}
     if config.channels.whatsapp.bridge_token:
         env["BRIDGE_TOKEN"] = config.channels.whatsapp.bridge_token
+    env["AUTH_DIR"] = str(get_runtime_subdir("whatsapp-auth"))
 
     try:
         subprocess.run(["npm", "start"], cwd=bridge_dir, check=True, env=env)
