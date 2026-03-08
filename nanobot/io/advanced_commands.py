@@ -1,100 +1,72 @@
-"""Advanced commands for session management."""
-
-from typing import Any
-
-from loguru import logger
-
-from nanobot.bus.events import InboundMessage, OutboundMessage
+import os
+from typing import Optional, List
 from nanobot.session.advanced_manager import AdvancedSessionManager
-
+from nanobot.bus.events import InboundMessage, OutboundMessage
 
 class AdvancedCommandHandler:
     """
-    Handles advanced commands like /session, /list, /new.
-    Intercepts messages before they reach the LLM.
+    Handles advanced session commands: /session, /list, /new.
+    Integrated into AgentLoop.
     """
-
-    def __init__(self, session_manager: AdvancedSessionManager, bus: Any):
+    def __init__(self, session_manager: AdvancedSessionManager, bus=None):
         self.session_manager = session_manager
         self.bus = bus
 
     async def handle_command(self, msg: InboundMessage) -> bool:
         """
-        Process a command. Returns True if handled, False otherwise.
+        Process advanced session commands from an InboundMessage.
+        Returns True if the command was handled, else False.
         """
-        text = msg.content.strip()
-        if not text.startswith("/"):
+        from loguru import logger
+        content = msg.content.strip()
+        if not content.startswith("/"):
             return False
 
-        parts = text.split()
-        cmd = parts[0].lower()
+        parts = content[1:].split()
+        if not parts:
+            return False
+        
+        command = parts[0].lower()
         args = parts[1:]
-        user_key = f"{msg.channel}:{msg.chat_id}"
+        
+        logger.info(f"AdvancedCommandHandler: Received command /{command} with args {args}")
 
-        if cmd == "/session":
+        response_text = None
+
+        if command == "session":
             if not args:
-                active = self.session_manager.get_active_session_name(user_key)
-                await self._send_reply(msg, f"You are currently in session: `{active}`")
-                return True
-            
-            subcmd = args[0].lower()
-            if subcmd == "list":
-                await self._handle_list(msg, user_key)
+                current = self.session_manager.current_session_name
+                response_text = f"Current session: **{current}**\nUse `/session [name]` to switch."
             else:
-                session_name = args[0]
-                self.session_manager.set_active_session(user_key, session_name)
-                await self._send_reply(msg, f"Switched to session: `{session_name}`")
-            return True
+                name = args[0]
+                session_id = self.session_manager.switch_session(name)
+                if session_id:
+                    response_text = f"Switched to session: **{name}** (ID: {session_id})"
+                else:
+                    response_text = f"Session **{name}** not found. Use `/new {name}` to create it."
 
-        elif cmd == "/list":
-            await self._handle_list(msg, user_key)
-            return True
+        elif command == "list":
+            sessions = self.session_manager.list_sessions()
+            current = self.session_manager.current_session_name
+            session_list = "\n".join([f"- {s} {'(active)' if s == current else ''}" for s in sessions])
+            response_text = f"Available sessions:\n{session_list}"
 
-        elif cmd == "/new":
-            session_name = args[0] if args else "default"
-            
-            if session_name == "default":
-                # Clear default session
-                session = self.session_manager.get_or_create(user_key)
-                session.clear()
-                self.session_manager.save(session)
-                self.session_manager.set_active_session(user_key, "default")
-                await self._send_reply(msg, "Default session cleared and activated.")
-            else:
-                # Create/switch to new named session
-                self.session_manager.set_active_session(user_key, session_name)
-                full_key = f"{user_key}::{session_name}"
-                session = self.session_manager.get_or_create(full_key)
-                session.clear()
-                self.session_manager.save(session)
-                await self._send_reply(msg, f"Created and switched to new session: `{session_name}`")
+        elif command == "new" and len(args) > 0:
+            # Only handle /new if it has arguments (named session)
+            # Standard /new is handled by the core loop
+            name = args[0]
+            session_id = self.session_manager.create_session(name)
+            self.session_manager.switch_session(name)
+            response_text = f"Created and switched to new session: **{name}** (ID: {session_id})"
+
+        if response_text and self.bus:
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=response_text
+                )
+            )
             return True
 
         return False
-
-    async def _handle_list(self, msg: InboundMessage, user_key: str) -> None:
-        """Handle the /list command."""
-        sessions = self.session_manager.get_user_sessions(user_key)
-        active = self.session_manager.get_active_session_name(user_key)
-        
-        if not sessions:
-            await self._send_reply(msg, "No sessions found.")
-            return
-
-        lines = ["**Your Sessions:**"]
-        for s in sessions:
-            name = s.get("name", "unknown")
-            mark = " (active)" if name == active else ""
-            lines.append(f"- `{name}`{mark}")
-            
-        await self._send_reply(msg, "\n".join(lines))
-
-    async def _send_reply(self, msg: InboundMessage, content: str) -> None:
-        """Send a reply back to the user."""
-        out = OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=content,
-            reply_to_message_id=msg.message_id,
-        )
-        await self.bus.publish_outbound(out)

@@ -1,84 +1,56 @@
-"""Advanced session management using inheritance."""
-
 import json
+import os
 from pathlib import Path
-from typing import Any
-
-from loguru import logger
-
-from nanobot.session.manager import Session, SessionManager
-from nanobot.utils.helpers import ensure_dir, safe_filename
-
+from typing import List, Optional
+from nanobot.session.manager import SessionManager
 
 class AdvancedSessionManager(SessionManager):
     """
-    Advanced session manager that supports named sessions.
-    Inherits from the base SessionManager to avoid modifying core files.
+    Advanced Session Manager that supports named sessions and persistence.
+    Inherits from SessionManager to maintain compatibility with core logic.
     """
+    def __init__(self, workspace: str | Path):
+        # Ensure workspace is a Path object for compatibility with SessionManager
+        workspace_path = Path(workspace)
+        super().__init__(workspace_path)
+        self.sessions_file = workspace_path / "active_sessions.json"
+        self.active_sessions = self._load_sessions()
+        self.current_session_name = "default"
 
-    def __init__(self, workspace: Path):
-        super().__init__(workspace)
-        self.active_sessions_file = self.workspace / "active_sessions.json"
-        self._active_sessions_cache: dict[str, str] = self._load_active_sessions()
+    def _load_sessions(self) -> dict:
+        if self.sessions_file.exists():
+            try:
+                with open(self.sessions_file, "r") as f:
+                    return json.load(f)
+            except Exception:
+                return {"default": "default"}
+        return {"default": "default"}
 
-    def _load_active_sessions(self) -> dict[str, str]:
-        """Load the mapping of user -> active session name."""
-        if not self.active_sessions_file.exists():
-            return {}
-        try:
-            with open(self.active_sessions_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load active sessions: {e}")
-            return {}
+    def _save_sessions(self):
+        with open(self.sessions_file, "w") as f:
+            json.dump(self.active_sessions, f, indent=4)
 
-    def _save_active_sessions(self) -> None:
-        """Save the mapping of user -> active session name."""
-        try:
-            with open(self.active_sessions_file, "w", encoding="utf-8") as f:
-                json.dump(self._active_sessions_cache, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save active sessions: {e}")
+    def create_session(self, name: str) -> str:
+        """Create a new named session."""
+        session_id = f"session_{name}"
+        self.active_sessions[name] = session_id
+        self._save_sessions()
+        # Ensure session directory exists
+        session_path = self.workspace / "sessions" / session_id
+        session_path.mkdir(parents=True, exist_ok=True)
+        return session_id
 
-    def get_active_session_name(self, user_key: str) -> str:
-        """Get the currently active session name for a user."""
-        return self._active_sessions_cache.get(user_key, "default")
+    def list_sessions(self) -> List[str]:
+        """List all available session names."""
+        return list(self.active_sessions.keys())
 
-    def set_active_session(self, user_key: str, session_name: str) -> None:
-        """Set the active session for a user."""
-        if session_name == "default":
-            self._active_sessions_cache.pop(user_key, None)
-        else:
-            self._active_sessions_cache[user_key] = session_name
-        self._save_active_sessions()
+    def switch_session(self, name: str) -> Optional[str]:
+        """Switch to an existing named session."""
+        if name in self.active_sessions:
+            self.current_session_name = name
+            return self.active_sessions[name]
+        return None
 
-    def _get_full_key(self, user_key: str, session_name: str = None) -> str:
-        """Generate the full storage key combining user and session name."""
-        name = session_name or self.get_active_session_name(user_key)
-        if name == "default":
-            return user_key
-        return f"{user_key}::{name}"
-
-    def get_or_create(self, key: str) -> Session:
-        """
-        Override get_or_create to inject the active session name.
-        The 'key' passed here is usually 'channel:chat_id'.
-        """
-        full_key = self._get_full_key(key)
-        return super().get_or_create(full_key)
-
-    def get_user_sessions(self, user_key: str) -> list[dict[str, Any]]:
-        """List all sessions belonging to a specific user."""
-        all_sessions = self.list_sessions()
-        user_sessions = []
-        
-        for s in all_sessions:
-            s_key = s.get("key", "")
-            if s_key == user_key:
-                s["name"] = "default"
-                user_sessions.append(s)
-            elif s_key.startswith(f"{user_key}::"):
-                s["name"] = s_key.split("::", 1)[1]
-                user_sessions.append(s)
-                
-        return user_sessions
+    def get_current_session_id(self) -> str:
+        """Get the ID of the currently active session."""
+        return self.active_sessions.get(self.current_session_name, "default")
