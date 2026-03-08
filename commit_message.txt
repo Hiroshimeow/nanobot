@@ -1,0 +1,15 @@
+feat(telegram): Implement inline keyboard for /mode command
+
+This commit introduces inline keyboard functionality for the /mode command in Telegram.
+
+Key changes include:
+- **Telegram Channel (`nanobot/channels/telegram.py`)**:
+    - Added `CallbackQueryHandler` to process inline button presses.
+    - Enhanced `send` and `_send_text` methods to support `InlineKeyboardMarkup` via `OutboundMessage.metadata`.
+    - Updated `start_polling` to explicitly include `callback_query` in `allowed_updates`, ensuring Telegram forwards button press events.
+    - Improved error handling and logging for callback queries.
+- **Agent Loop (`nanobot/agent/loop.py`)**:
+    - Modified `/mode` command logic to generate and return inline keyboard data when listing available modes or encountering an invalid mode.
+    - Enhanced `/mode` response to clearly display the current active mode and model.
+
+These changes significantly improve user experience by allowing mode switching via interactive buttons, reducing manual input and potential errors.
