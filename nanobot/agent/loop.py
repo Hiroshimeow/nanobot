@@ -88,7 +88,11 @@ class AgentLoop:
         self.restrict_to_workspace = restrict_to_workspace
 
         self.context = ContextBuilder(workspace)
-        self.sessions = session_manager or SessionManager(workspace)
+        from nanobot.session.advanced_manager import AdvancedSessionManager
+        self.sessions = session_manager or AdvancedSessionManager(workspace)
+        
+        from nanobot.io.advanced_commands import AdvancedCommandHandler
+        self.advanced_commands = AdvancedCommandHandler(self.sessions, self.bus)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
             provider=provider,
@@ -372,6 +376,10 @@ class AgentLoop:
         on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
+        # Intercept advanced commands
+        if await self.advanced_commands.handle_command(msg):
+            return None
+            
         # System messages: parse origin from chat_id ("channel:chat_id")
         if msg.channel == "system":
             channel, chat_id = msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
