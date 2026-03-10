@@ -133,6 +133,28 @@ class TelegramChannel(BaseChannel):
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
         self._media_group_buffers: dict[str, dict] = {}
         self._media_group_tasks: dict[str, asyncio.Task] = {}
+        self._message_threads: dict[tuple[str, int], int] = {}
+        self._bot_user_id: int | None = None
+        self._bot_username: str | None = None
+
+    def is_allowed(self, sender_id: str) -> bool:
+        """Preserve Telegram's legacy id|username allowlist matching."""
+        if super().is_allowed(sender_id):
+            return True
+
+        allow_list = getattr(self.config, "allow_from", [])
+        if not allow_list or "*" in allow_list:
+            return False
+
+        sender_str = str(sender_id)
+        if sender_str.count("|") != 1:
+            return False
+
+        sid, username = sender_str.split("|", 1)
+        if not sid.isdigit() or not username:
+            return False
+
+        return sid in allow_list or username in allow_list
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -175,6 +197,8 @@ class TelegramChannel(BaseChannel):
 
         # Get bot info and register command menu
         bot_info = await self._app.bot.get_me()
+        self._bot_user_id = getattr(bot_info, "id", None)
+        self._bot_username = getattr(bot_info, "username", None)
         logger.info("Telegram bot @{} connected", bot_info.username)
 
         try:
@@ -364,6 +388,101 @@ class TelegramChannel(BaseChannel):
         sid = str(user.id)
         return f"{sid}|{user.username}" if user.username else sid
 
+    @staticmethod
+    def _derive_topic_session_key(message) -> str | None:
+        """Derive topic-scoped session key for non-private Telegram chats."""
+        message_thread_id = getattr(message, "message_thread_id", None)
+        if message.chat.type == "private" or message_thread_id is None:
+            return None
+        return f"telegram:{message.chat_id}:topic:{message_thread_id}"
+
+    @staticmethod
+    def _build_message_metadata(message, user) -> dict:
+        """Build common Telegram inbound metadata payload."""
+        return {
+            "message_id": message.message_id,
+            "user_id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "is_group": message.chat.type != "private",
+            "message_thread_id": getattr(message, "message_thread_id", None),
+            "is_forum": bool(getattr(message.chat, "is_forum", False)),
+        }
+
+    async def _ensure_bot_identity(self) -> tuple[int | None, str | None]:
+        """Load bot identity once and reuse it for mention/reply checks."""
+        if self._bot_user_id is not None or self._bot_username is not None:
+            return self._bot_user_id, self._bot_username
+        if not self._app:
+            return None, None
+        bot_info = await self._app.bot.get_me()
+        self._bot_user_id = getattr(bot_info, "id", None)
+        self._bot_username = getattr(bot_info, "username", None)
+        return self._bot_user_id, self._bot_username
+
+    @staticmethod
+    def _has_mention_entity(
+        text: str,
+        entities,
+        bot_username: str,
+        bot_id: int | None,
+    ) -> bool:
+        """Check Telegram mention entities against the bot username."""
+        handle = f"@{bot_username}".lower()
+        for entity in entities or []:
+            entity_type = getattr(entity, "type", None)
+            if entity_type == "text_mention":
+                user = getattr(entity, "user", None)
+                if user is not None and bot_id is not None and getattr(user, "id", None) == bot_id:
+                    return True
+                continue
+            if entity_type != "mention":
+                continue
+            offset = getattr(entity, "offset", None)
+            length = getattr(entity, "length", None)
+            if offset is None or length is None:
+                continue
+            if text[offset : offset + length].lower() == handle:
+                return True
+        return handle in text.lower()
+
+    async def _is_group_message_for_bot(self, message) -> bool:
+        """Allow group messages when policy is open, @mentioned, or replying to the bot."""
+        if message.chat.type == "private" or self.config.group_policy == "open":
+            return True
+
+        bot_id, bot_username = await self._ensure_bot_identity()
+        if bot_username:
+            text = message.text or ""
+            caption = message.caption or ""
+            if self._has_mention_entity(
+                text,
+                getattr(message, "entities", None),
+                bot_username,
+                bot_id,
+            ):
+                return True
+            if self._has_mention_entity(
+                caption,
+                getattr(message, "caption_entities", None),
+                bot_username,
+                bot_id,
+            ):
+                return True
+
+        reply_user = getattr(getattr(message, "reply_to_message", None), "from_user", None)
+        return bool(bot_id and reply_user and reply_user.id == bot_id)
+
+    def _remember_thread_context(self, message) -> None:
+        """Cache topic thread id by chat/message id for follow-up replies."""
+        message_thread_id = getattr(message, "message_thread_id", None)
+        if message_thread_id is None:
+            return
+        key = (str(message.chat_id), message.message_id)
+        self._message_threads[key] = message_thread_id
+        if len(self._message_threads) > 1000:
+            self._message_threads.pop(next(iter(self._message_threads)))
+
     async def _forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward slash commands to the bus for unified handling in AgentLoop."""
         if not update.message or not update.effective_user:
@@ -390,6 +509,9 @@ class TelegramChannel(BaseChannel):
 
         # Store chat_id for replies
         self._chat_ids[sender_id] = chat_id
+
+        if not await self._is_group_message_for_bot(message):
+            return
 
         # Build content from text and/or media
         content_parts = []
@@ -425,21 +547,12 @@ class TelegramChannel(BaseChannel):
         if media_file and self._app:
             try:
                 file = await self._app.bot.get_file(media_file.file_id)
-<<<<<<< HEAD
-                ext = self._get_extension(media_type, getattr(media_file, 'mime_type', None))
-
-                # Save to workspace/media/
-                from pathlib import Path
-                media_dir = Path.home() / ".nanobot" / "media"
-                media_dir.mkdir(parents=True, exist_ok=True)
-=======
                 ext = self._get_extension(
                     media_type,
                     getattr(media_file, 'mime_type', None),
                     getattr(media_file, 'file_name', None),
                 )
                 media_dir = get_media_dir("telegram")
->>>>>>> bc1adea14fadf1cc73545e61a0daf24914d2540b
 
                 file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
                 await file.download_to_drive(str(file_path))

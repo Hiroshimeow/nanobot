@@ -4,12 +4,9 @@ import asyncio
 import os
 import signal
 from pathlib import Path
-<<<<<<< HEAD
 from typing import TypedDict
-=======
 import select
 import sys
->>>>>>> bc1adea14fadf1cc73545e61a0daf24914d2540b
 
 import typer
 from rich.console import Console
@@ -200,10 +197,6 @@ def onboard():
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
 
 
-
-
-
-<<<<<<< HEAD
 class AgentRuntimeConfig(TypedDict):
     """Runtime configuration for an agent (main or subagent)."""
     provider: object  # LLMProvider, use object to avoid circular import
@@ -211,13 +204,15 @@ class AgentRuntimeConfig(TypedDict):
     max_tokens: int
     temperature: float
     reasoning_effort: str | None
-=======
+
+
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.custom_provider import CustomProvider
->>>>>>> bc1adea14fadf1cc73545e61a0daf24914d2540b
+    # This is a helper for simple provider creation, but _create_provider is more robust
+    return _create_provider(config, config.agents.defaults.model, config.agents.defaults.provider)
 
 
 def _create_provider(config: Config, model: str, provider: str | None = None):
@@ -226,7 +221,7 @@ def _create_provider(config: Config, model: str, provider: str | None = None):
     Args:
         config: Config object
         model: Model name
-        provider: Provider override (e.g., "zhipu", "dashscope"). None or "auto" means auto-detect.
+        provider: Provider override (e.g., \"zhipu\", \"dashscope\"). None or \"auto\" means auto-detect.
     """
     from nanobot.providers.custom_provider import CustomProvider
     from nanobot.providers.litellm_provider import LiteLLMProvider
@@ -300,7 +295,8 @@ def _get_agent_config(config: Config, agent_cfg, shared_provider=None) -> AgentR
 
 @app.command()
 def gateway(
-    port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
+    port: int | None = typer.Option(None, "--port", "-p", help="Gateway port"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """Start the nanobot gateway."""
@@ -308,11 +304,7 @@ def gateway(
     from nanobot.bus.queue import MessageBus
     from nanobot.agent.loop import AgentLoop
     from nanobot.channels.manager import ChannelManager
-<<<<<<< HEAD
-    from nanobot.config.loader import get_data_dir, load_config
-=======
     from nanobot.session.manager import SessionManager
->>>>>>> bc1adea14fadf1cc73545e61a0daf24914d2540b
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
@@ -320,28 +312,23 @@ def gateway(
     if verbose:
         import logging
         logging.basicConfig(level=logging.DEBUG)
-<<<<<<< HEAD
 
-    console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
-
-=======
-    
-    console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
-    
->>>>>>> bc1adea14fadf1cc73545e61a0daf24914d2540b
     config = load_config()
+    # Override workspace if provided
+    if workspace:
+        config.workspace_path = Path(workspace).expanduser().resolve()
+    
+    port = port if port is not None else config.gateway.port
+    console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
+
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
     session_manager = SessionManager(config.workspace_path)
-<<<<<<< HEAD
 
     # Get agent configs (main + subagent)
     main_cfg = _get_agent_config(config, config.agents.defaults)
     sub_cfg = _get_agent_config(config, config.agents.subagent or config.agents.defaults, shared_provider=main_cfg["provider"])
 
-=======
-    
->>>>>>> bc1adea14fadf1cc73545e61a0daf24914d2540b
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
@@ -385,8 +372,7 @@ def gateway(
     # Create channel manager
     channels = ChannelManager(config, bus)
 
-    # ========== TaskQueue 集成 ==========
-    try:
+    # ========== TaskQueue 集成 ==========\n    try:
         from scripts.task_queue_gateway import integrate_task_queue
         integrate_task_queue(agent, bus, config, channels)
         console.print("[green]TaskQueue integrated successfully[/green]")
@@ -473,8 +459,6 @@ def gateway(
             await channels.stop_all()
     
     asyncio.run(run())
-
-
 
 
 # ============================================================================
@@ -1001,23 +985,24 @@ def cron_run(
     logger.disable("nanobot")
 
     config = load_config()
-    provider = _make_provider(config)
     bus = MessageBus()
+    
+    # Get agent configs (main + subagent)
+    main_cfg = _get_agent_config(config, config.agents.defaults)
+    sub_cfg = _get_agent_config(config, config.agents.subagent or config.agents.defaults, shared_provider=main_cfg["provider"])
+
     agent_loop = AgentLoop(
         bus=bus,
-        provider=provider,
         workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        temperature=config.agents.defaults.temperature,
-        max_tokens=config.agents.defaults.max_tokens,
+        agent_config=main_cfg,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
-        reasoning_effort=config.agents.defaults.reasoning_effort,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        subagent_config=sub_cfg,
     )
 
     store_path = get_data_dir() / "cron" / "jobs.json"
