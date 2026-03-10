@@ -1,0 +1,26 @@
+merge: sync nnb with upstream/main and resolve conflicts
+
+This commit synchronizes the 'nnb' branch with the latest updates from HKUDS/nanobot:main, integrating critical upstream improvements while preserving and enhancing custom features.
+
+Key Changes & Integrations:
+- Upstream Sync: Merged latest commits from upstream/main, including PR #1678 (Windows fixes), #1686 (Model Routing), #1690 (Multimodal), and #1696 (Task Queue).
+- Conflict Resolution:
+    - nanobot/channels/telegram.py:
+        - Implemented support for Telegram Message Threads and Bot User identification.
+        - Refactored media handling to utilize the unified get_media_dir("telegram") helper for better path consistency.
+    - nanobot/cli/commands.py:
+        - Resolved complex nested conflict markers and fixed syntax errors.
+        - Fully integrated the Task Queue system and Subagent runtime configuration into the gateway and agent commands.
+        - Updated the 'cron run' command to maintain compatibility with the new AgentRuntimeConfig structure.
+    - nanobot/config/schema.py:
+        - Merged upstream schema updates while preserving custom agent defaults and subagent configurations.
+
+New Features & Enhancements:
+- Task Queue System: Robust background task management, enabling asynchronous processing and status tracking.
+- Subagent Support: Enabled the main agent to spawn and manage specialized sub-agents for complex task delegation.
+- Telegram Enhancements: Native thread support and more reliable media group buffering.
+- Unified Path Management: Standardized workspace and media paths for improved cross-platform (Windows/Linux) compatibility.
+
+Bug Fixes:
+- Fixed critical logic breaks in CLI commands caused by the transition to the new AgentLoop architecture.
+- Cleaned up redundant provider initialization logic to ensure efficient resource usage.
