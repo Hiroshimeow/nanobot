@@ -372,7 +372,8 @@ def gateway(
     # Create channel manager
     channels = ChannelManager(config, bus)
 
-    # ========== TaskQueue 集成 ==========\n    try:
+    # ========== TaskQueue 集成 ==========
+    try:
         from scripts.task_queue_gateway import integrate_task_queue
         integrate_task_queue(agent, bus, config, channels)
         console.print("[green]TaskQueue integrated successfully[/green]")
