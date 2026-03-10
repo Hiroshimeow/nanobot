@@ -289,7 +289,7 @@ def _get_agent_config(config: Config, agent_cfg, shared_provider=None) -> AgentR
 
 
 # ============================================================================
-# Gateway / Server
+# Gateway / Server (Updated for TaskQueue)
 # ============================================================================
 
 
