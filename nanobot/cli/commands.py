@@ -7,6 +7,17 @@ from pathlib import Path
 from typing import TypedDict
 import select
 import sys
+import io
+
+# Fix for Windows console encoding issues with emojis
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding='utf-8')
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
 import typer
 from rich.console import Console
