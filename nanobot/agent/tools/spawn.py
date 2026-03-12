@@ -48,15 +48,20 @@ class SpawnTool(Tool):
                     "type": "string",
                     "description": "Optional short label for the task (for display)",
                 },
+                "parallel": {
+                    "type": "boolean",
+                    "description": "If True, runs immediately in parallel (for Research/Audit). If False, queues in TaskQueue (for Pipeline/Sequential tasks).",
+                },
             },
             "required": ["task"],
         }
 
-    async def execute(self, task: str, label: str | None = None, **kwargs: Any) -> str:
+    async def execute(self, task: str, label: str | None = None, parallel: bool = False, **kwargs: Any) -> str:
         """Spawn a subagent to execute the given task."""
         return await self._manager.spawn(
             task=task,
             label=label,
+            parallel=parallel,
             origin_channel=self._origin_channel,
             origin_chat_id=self._origin_chat_id,
             session_key=self._session_key,
