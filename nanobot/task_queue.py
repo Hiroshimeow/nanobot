@@ -20,8 +20,8 @@ from enum import Enum
 import queue
 import logging
 
-# 配置
-DATA_DIR = Path("/home/aobo/.nanobot/workspace/data")
+# 配置 (Dynamic path for all OS)
+DATA_DIR = Path.home() / ".nanobot" / "workspace" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_DB = DATA_DIR / "task_queue.db"
 RESULTS_DIR = DATA_DIR / "task_results"

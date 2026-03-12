@@ -15,8 +15,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 任务队列模块路径
-TASK_QUEUE_MODULE = "/home/aobo/.nanobot/workspace/scripts/task_queue.py"
+# 任务队列模块路径 (Dynamic path for all OS)
+TASK_QUEUE_MODULE = str(Path(__file__).parent / "task_queue.py")
 
 
 def integrate_task_queue(agent, bus, config, channels=None):
@@ -32,18 +32,13 @@ def integrate_task_queue(agent, bus, config, channels=None):
     import sys
     from pathlib import Path
 
-    # 添加 nanobot 路径（确保可以导入 nanobot 模块）
-    nanobot_path = (
-        Path(__file__).parent.parent
-        / ".local/share/uv/tools/nanobot-ai/lib/python3.11/site-packages"
-    )
-    if nanobot_path.exists():
-        sys.path.insert(0, str(nanobot_path))
+    # Ensure nanobot package is in sys.path
+    root_path = Path(__file__).parent.parent
+    if str(root_path) not in sys.path:
+        sys.path.insert(0, str(root_path))
 
-    sys.path.insert(0, str(Path(TASK_QUEUE_MODULE).parent))
-
-    # 导入任务队列模块
-    from task_queue import task_queue, TaskQueue
+    # 导入任务队列模块 (Use absolute import within package)
+    from nanobot.task_queue import task_queue, TaskQueue
 
     # 设置 ChannelManager 和 MessageBus
     if channels:
@@ -182,9 +177,8 @@ def submit_task(
     import sys
     from pathlib import Path
 
-    # 动态导入
-    sys.path.insert(0, str(Path(TASK_QUEUE_MODULE).parent))
-    from task_queue import task_queue
+    # 动态导入 (Use absolute import within package)
+    from nanobot.task_queue import task_queue
 
     # 确保队列已启动
     if not task_queue._worker_thread or not task_queue._worker_thread.is_alive():

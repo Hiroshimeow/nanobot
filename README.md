@@ -1119,7 +1119,7 @@ Run the gateway as a systemd user service so it starts automatically and restart
 **1. Find the nanobot binary path:**
 
 ```bash
-which nanobot   # e.g. /home/user/.local/bin/nanobot
+which nanobot   # e.g. ~/.local/bin/nanobot
 ```
 
 **2. Create the service file** at `~/.config/systemd/user/nanobot-gateway.service` (replace `ExecStart` path if needed):
