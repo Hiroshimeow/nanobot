@@ -96,21 +96,42 @@ class SubagentManager:
             # Sequential Execution (TaskQueue)
             from nanobot.task_queue import TaskQueue
             tq = TaskQueue()
+            
+            # Register a specialized handler for subagent tasks if not already registered
+            if "subagent_task" not in tq._handlers:
+                def handle_subagent_task(tid: str, meta: dict) -> dict:
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(
+                            self._run_subagent(
+                                task_id=tid,
+                                task=meta["task"],
+                                label=meta["label"],
+                                origin=meta["origin"]
+                            )
+                        )
+                        return {"status": "ok"}
+                    finally:
+                        loop.close()
+                tq.register_handler("subagent_task", handle_subagent_task)
+
             metadata = {
-                "message": task,
-                "channel": origin_channel,
-                "user_id": origin_chat_id,
+                "task": task,
                 "label": display_label,
+                "origin": origin,
                 "session_key": session_key or f"task:{task_id}"
             }
+            
             tq_id = tq.submit(
-                name="agent_task",
+                name="subagent_task",
                 metadata=metadata,
                 user_id=origin_chat_id,
                 channel=origin_channel
             )
             logger.info("Queued subagent task [{}]: {}", tq_id, display_label)
-            return f"Subagent [{display_label}] has been QUEUED (ID: {tq_id})."
+            return f"Subagent [{display_label}] has been QUEUED (ID: {tq_id}). It will run sequentially."
 
     async def _run_subagent(
         self,
@@ -152,9 +173,9 @@ class SubagentManager:
             tools.register(message_tool)
             
             system_prompt = self._build_subagent_prompt()
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": task},
+            messages: list[dict[str, Any]] = [\
+                {"role": "system", "content": system_prompt},\
+                {"role": "user", "content": task},\
             ]
 
             # Run agent loop (limited iterations)
@@ -172,9 +193,9 @@ class SubagentManager:
                 )
 
                 if response.has_tool_calls:
-                    tool_call_dicts = [
-                        tc.to_openai_tool_call()
-                        for tc in response.tool_calls
+                    tool_call_dicts = [\
+                        tc.to_openai_tool_call()\
+                        for tc in response.tool_calls\
                     ]
                     messages.append(build_assistant_message(
                         response.content or "",
