@@ -68,47 +68,31 @@ class SubagentManager:
         origin_chat_id: str = "direct",
         session_key: str | None = None,
     ) -> str:
-        """Spawn a subagent to execute a task in the background."""
+        """Spawn a subagent to execute a task via the TaskQueue (Sequential)."""
+        from nanobot.task_queue import TaskQueue
+        
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
-        origin = {"channel": origin_channel, "chat_id": origin_chat_id}
-        spawn_key = self._build_spawn_key(session_key, task, label)
-
-        if existing_task_id := self._active_spawn_keys.get(spawn_key):
-            existing = self._running_tasks.get(existing_task_id)
-            if existing is not None and not existing.done():
-                logger.info(
-                    "Deduped subagent spawn [{}]: {}",
-                    existing_task_id,
-                    display_label,
-                )
-                return (
-                    f"Subagent [{display_label}] is already running "
-                    f"(id: {existing_task_id}); not spawning a duplicate."
-                )
-            self._active_spawn_keys.pop(spawn_key, None)
-
-        bg_task = asyncio.create_task(
-            self._run_subagent(task_id, task, display_label, origin)
+        
+        # Submit task to the global TaskQueue for sequential execution
+        tq = TaskQueue()
+        metadata = {
+            "message": task,
+            "channel": origin_channel,
+            "user_id": origin_chat_id,
+            "label": display_label,
+            "session_key": session_key or f"task:{task_id}"
+        }
+        
+        tq_id = tq.submit(
+            name="agent_task",
+            metadata=metadata,
+            user_id=origin_chat_id,
+            channel=origin_channel
         )
-        self._running_tasks[task_id] = bg_task
-        self._active_spawn_keys[spawn_key] = task_id
-        if session_key:
-            self._session_tasks.setdefault(session_key, set()).add(task_id)
-
-        def _cleanup(_: asyncio.Task) -> None:
-            self._running_tasks.pop(task_id, None)
-            if self._active_spawn_keys.get(spawn_key) == task_id:
-                self._active_spawn_keys.pop(spawn_key, None)
-            if session_key and (ids := self._session_tasks.get(session_key)):
-                ids.discard(task_id)
-                if not ids:
-                    del self._session_tasks[session_key]
-
-        bg_task.add_done_callback(_cleanup)
-
-        logger.info("Spawned subagent [{}]: {}", task_id, display_label)
-        return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
+        
+        logger.info("Queued subagent task [{}]: {}", tq_id, display_label)
+        return f"Subagent [{display_label}] has been queued (ID: {tq_id}). It will run sequentially."
 
     async def _run_subagent(
         self,
