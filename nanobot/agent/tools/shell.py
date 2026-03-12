@@ -77,13 +77,12 @@ class ExecTool(Tool):
             "required": ["command"],
         }
 
-    async def execute(
-        self,
-        command: str,
-        working_dir: str | None = None,
-        timeout: int | None = None,
-        **kwargs: Any,
-    ) -> str:
+    async def execute(self, **kwargs: Any) -> str:
+        command = kwargs.get("command")
+        if not command:
+            return "Error: 'command' parameter is required."
+        working_dir = kwargs.get("working_dir")
+        timeout = kwargs.get("timeout")
         cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)
         if guard_error:
@@ -101,9 +100,13 @@ class ExecTool(Tool):
             # inherit the pipe handles and keep them open after the main
             # process exits.
             if sys.platform == "win32":
-                stdout, stderr, returncode = await self._run_with_tempfiles(command, cwd, env)
+                stdout, stderr, returncode = await self._run_with_tempfiles(
+                    command, cwd, env, effective_timeout
+                )
             else:
-                stdout, stderr, returncode = await self._run_with_pipes(command, cwd, env)
+                stdout, stderr, returncode = await self._run_with_pipes(
+                    command, cwd, env, effective_timeout
+                )
         except asyncio.TimeoutError:
             return f"Error: Command timed out after {self.timeout} seconds"
         except Exception as e:
@@ -130,7 +133,7 @@ class ExecTool(Tool):
         return result
 
     async def _run_with_pipes(
-        self, command: str, cwd: str, env: dict[str, str]
+        self, command: str, cwd: str, env: dict[str, str], timeout: int
     ) -> tuple[str, str, int | None]:
         """Run command using pipes for stdout/stderr (default on POSIX)."""
         process = await asyncio.create_subprocess_shell(
@@ -142,7 +145,7 @@ class ExecTool(Tool):
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(), timeout=self.timeout
+                process.communicate(), timeout=timeout
             )
         except asyncio.TimeoutError:
             process.kill()
@@ -156,7 +159,7 @@ class ExecTool(Tool):
         return stdout, stderr, process.returncode
 
     async def _run_with_tempfiles(
-        self, command: str, cwd: str, env: dict[str, str]
+        self, command: str, cwd: str, env: dict[str, str], timeout: int
     ) -> tuple[str, str, int | None]:
         """Run command using temp files for stdout/stderr (Windows).
 
@@ -182,7 +185,7 @@ class ExecTool(Tool):
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=effective_timeout,
+                    timeout=timeout,
                 )
             except asyncio.TimeoutError:
                 process.kill()

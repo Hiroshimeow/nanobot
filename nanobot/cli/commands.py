@@ -13,9 +13,9 @@ import io
 if sys.platform == "win32":
     try:
         if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stdout.reconfigure(encoding="utf-8")
         if hasattr(sys.stderr, "reconfigure"):
-            sys.stderr.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
@@ -195,7 +195,9 @@ def onboard():
         save_config(Config())
         console.print(f"[green]✓[/green] Created config at {config_path}")
 
-    console.print("[dim]Config template now uses `maxTokens` + `contextWindowTokens`; `memoryWindow` is no longer a runtime setting.[/dim]")
+    console.print(
+        "[dim]Config template now uses `maxTokens` + `contextWindowTokens`; `memoryWindow` is no longer a runtime setting.[/dim]"
+    )
 
     # Create workspace
     workspace = get_workspace_path()
@@ -219,7 +221,7 @@ def onboard():
 class AgentRuntimeConfig(TypedDict):
     """Runtime configuration for an agent (main or subagent)."""
 
-    provider: object  # LLMProvider, use object to avoid circular import
+    provider: object  # Any provider derived from LLMProvider
     model: str
     max_tokens: int
     temperature: float
@@ -243,23 +245,24 @@ def _create_provider(config: Config, model: str, provider: str | None = None):
     Args:
         config: Config object
         model: Model name
-        provider: Provider override (e.g., \"zhipu\", \"dashscope\"). None or \"auto\" means auto-detect.
+        provider: Provider override (e.g., "zhipu", "dashscope"). None or "auto" means auto-detect.
     """
     from nanobot.providers.custom_provider import CustomProvider
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+    from nanobot.providers.base import GenerationSettings
 
     provider_name = config.get_provider_name(model, provider)
     p = config.get_provider(model, provider)
 
     # OpenAI Codex (OAuth)
+    llm_provider = None
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
-        provider = OpenAICodexProvider(default_model=model)
-    # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
+        llm_provider = OpenAICodexProvider(default_model=model)
+
     # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
     if provider_name == "custom":
-        from nanobot.providers.custom_provider import CustomProvider
-        provider = CustomProvider(
+        llm_provider = CustomProvider(
             api_key=p.api_key if p else "no-key",
             api_base=config.get_api_base(model, provider) or "http://localhost:8000/v1",
             default_model=model,
@@ -267,27 +270,28 @@ def _create_provider(config: Config, model: str, provider: str | None = None):
 
     from nanobot.providers.registry import find_by_name
 
-    spec = find_by_name(provider_name)
+    spec = find_by_name(provider_name) if provider_name else None
     if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):
         console.print("[red]Error: No API key configured.[/red]")
         console.print("Set one in ~/.nanobot/config.json under providers section")
         raise typer.Exit(1)
 
-    provider = LiteLLMProvider(
-        api_key=p.api_key if p else None,
-        api_base=config.get_api_base(model, provider),
-        default_model=model,
-        extra_headers=p.extra_headers if p else None,
-        provider_name=provider_name,
-    )
-    
+    if llm_provider is None:
+        llm_provider = LiteLLMProvider(
+            api_key=p.api_key if p else None,
+            api_base=config.get_api_base(model, provider),
+            default_model=model,
+            extra_headers=p.extra_headers if p else None,
+            provider_name=provider_name or "unknown",
+        )
+
     defaults = config.agents.defaults
-    provider.generation = GenerationSettings(
+    llm_provider.generation = GenerationSettings(
         temperature=defaults.temperature,
         max_tokens=defaults.max_tokens,
         reasoning_effort=defaults.reasoning_effort,
     )
-    return provider
+    return llm_provider
 
 
 def _get_agent_config(config: Config, agent_cfg, shared_provider=None) -> AgentRuntimeConfig:
@@ -357,7 +361,7 @@ def gateway(
     config = load_config()
     # Override workspace if provided
     if workspace:
-        config.workspace_path = Path(workspace).expanduser().resolve()
+        config.agents.defaults.workspace = str(Path(workspace).expanduser().resolve())
     _print_deprecated_memory_window_notice(config)
     port = port if port is not None else config.gateway.port
 
@@ -384,15 +388,10 @@ def gateway(
     agent = AgentLoop(
         bus=bus,
         workspace=config.workspace_path,
-<<<<<<< HEAD
-        agent_config=main_cfg,
-        max_iterations=config.agents.defaults.max_tool_iterations,
-        memory_window=config.agents.defaults.memory_window,
-=======
-        model=config.agents.defaults.model,
+        agent_config=dict(main_cfg),
         max_iterations=config.agents.defaults.max_tool_iterations,
         context_window_tokens=config.agents.defaults.context_window_tokens,
->>>>>>> upstream/main
+        memory_window=config.agents.defaults.memory_window or 100,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
@@ -400,7 +399,7 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
-        subagent_config=sub_cfg,
+        subagent_config=dict(sub_cfg),
     )
 
     # Set cron callback (needs agent)
@@ -484,7 +483,7 @@ def gateway(
     hb_cfg = config.gateway.heartbeat
     heartbeat = HeartbeatService(
         workspace=config.workspace_path,
-        provider=main_cfg["provider"],
+        provider=main_cfg["provider"],  # type: ignore
         model=agent.model,
         on_execute=on_heartbeat_execute,
         on_notify=on_heartbeat_notify,
@@ -573,16 +572,17 @@ def agent(
     agent_loop = AgentLoop(
         bus=bus,
         workspace=config.workspace_path,
-        agent_config=main_cfg,
+        agent_config=dict(main_cfg),
         max_iterations=config.agents.defaults.max_tool_iterations,
-        memory_window=config.agents.defaults.memory_window,
+        context_window_tokens=config.agents.defaults.context_window_tokens,
+        memory_window=config.agents.defaults.memory_window or 100,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
-        subagent_config=sub_cfg,
+        subagent_config=dict(sub_cfg),
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -1056,15 +1056,16 @@ def cron_run(
     agent_loop = AgentLoop(
         bus=bus,
         workspace=config.workspace_path,
-        agent_config=main_cfg,
+        agent_config=dict(main_cfg),
         max_iterations=config.agents.defaults.max_tool_iterations,
-        memory_window=config.agents.defaults.memory_window,
+        context_window_tokens=config.agents.defaults.context_window_tokens,
+        memory_window=config.agents.defaults.memory_window or 100,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
-        subagent_config=sub_cfg,
+        subagent_config=dict(sub_cfg),
     )
 
     store_path = get_data_dir() / "cron" / "jobs.json"

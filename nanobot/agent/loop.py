@@ -11,7 +11,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from loguru import logger
+import logging
 
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryConsolidator
@@ -69,7 +69,7 @@ class AgentLoop:
 
         self.bus = bus
         self.channels_config = channels_config
-        self.provider = agent_config["provider"]
+        self.provider = agent_config.get("provider", "gemini")
         self.workspace = workspace
         self.model = agent_config["model"]
         self.max_iterations = max_iterations
@@ -90,14 +90,29 @@ class AgentLoop:
 
         # Build subagent config with fallbacks to main agent settings
         sub = subagent_config or {}
+
+        # In new architecture, generation settings (temp/tokens) are attached to provider
+        sub_provider = sub.get("provider", self.provider)
+
         self.subagents = SubagentManager(
-            provider=sub.get("provider", self.provider),
+            provider=sub_provider,
             workspace=workspace,
             bus=bus,
             model=sub.get("model", self.model),
-            temperature=sub.get("temperature", self.temperature),
-            max_tokens=sub.get("max_tokens", self.max_tokens),
-            reasoning_effort=sub.get("reasoning_effort", self.reasoning_effort),
+            brave_api_key=brave_api_key,
+            web_proxy=web_proxy,
+            exec_config=self.exec_config,
+            restrict_to_workspace=restrict_to_workspace,
+        )
+
+        from nanobot.agent.tools.register_core_tools import register_core_tools
+
+        register_core_tools(
+            self.tools,
+            workspace=workspace,
+            bus=bus,
+            provider=self.provider,
+            subagents=self.subagents,
             brave_api_key=brave_api_key,
             web_proxy=web_proxy,
             exec_config=self.exec_config,
@@ -113,7 +128,7 @@ class AgentLoop:
         self._processing_lock = asyncio.Lock()
         self.memory_consolidator = MemoryConsolidator(
             workspace=workspace,
-            provider=provider,
+            provider=self.provider,
             model=self.model,
             sessions=self.sessions,
             context_window_tokens=context_window_tokens,
@@ -155,7 +170,7 @@ class AgentLoop:
             await connect_mcp_servers(self._mcp_servers, self.tools, self._mcp_stack)
             self._mcp_connected = True
         except Exception as e:
-            logger.error("Failed to connect MCP servers (will retry next message): {}", e)
+            logging.error("Failed to connect MCP servers (will retry next message): %s", e)
             if self._mcp_stack:
                 try:
                     await self._mcp_stack.aclose()
@@ -233,7 +248,7 @@ class AgentLoop:
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
+                    logging.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
@@ -243,7 +258,7 @@ class AgentLoop:
                 # Don't persist error responses to session history — they can
                 # poison the context and cause permanent 400 loops (#1303).
                 if response.finish_reason == "error":
-                    logger.error("LLM returned error: {}", (clean or "")[:200])
+                    logging.error("LLM returned error: {}", (clean or "")[:200])
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
                     break
                 messages = self.context.add_assistant_message(
@@ -256,7 +271,7 @@ class AgentLoop:
                 break
 
         if final_content is None and iteration >= self.max_iterations:
-            logger.warning("Max iterations ({}) reached", self.max_iterations)
+            logging.warning("Max iterations ({}) reached", self.max_iterations)
             final_content = (
                 f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
                 "without completing the task. You can try breaking the task into smaller steps."
@@ -268,7 +283,7 @@ class AgentLoop:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
-        logger.info("Agent loop started")
+        logging.info("Agent loop started")
 
         while self._running:
             try:
@@ -344,7 +359,7 @@ class AgentLoop:
                         )
                     )
             except asyncio.CancelledError:
-                logger.info("Task cancelled for session {}", msg.session_key)
+                logging.info("Task cancelled for session {}", msg.session_key)
                 raise
             except Exception:
                 logger.exception("Error processing message for session {}", msg.session_key)
@@ -368,7 +383,7 @@ class AgentLoop:
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
-        logger.info("Agent loop stopping")
+        logging.info("Agent loop stopping")
 
     async def _process_message(
         self,
@@ -382,7 +397,7 @@ class AgentLoop:
             channel, chat_id = (
                 msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
             )
-            logger.info("Processing system message from {}", msg.sender_id)
+            logging.info("Processing system message from {}", msg.sender_id)
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
             await self.memory_consolidator.maybe_consolidate_by_tokens(session)
@@ -405,7 +420,7 @@ class AgentLoop:
             )
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
+        logging.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
@@ -492,7 +507,7 @@ class AgentLoop:
             return None
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
+        logging.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
