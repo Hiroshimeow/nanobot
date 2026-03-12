@@ -11,7 +11,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-import logging
+from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryConsolidator
@@ -69,7 +69,7 @@ class AgentLoop:
 
         self.bus = bus
         self.channels_config = channels_config
-        self.provider = agent_config.get("provider", "gemini")
+        self.provider = agent_config["provider"]
         self.workspace = workspace
         self.model = agent_config["model"]
         self.max_iterations = max_iterations
@@ -170,7 +170,7 @@ class AgentLoop:
             await connect_mcp_servers(self._mcp_servers, self.tools, self._mcp_stack)
             self._mcp_connected = True
         except Exception as e:
-            logging.error("Failed to connect MCP servers (will retry next message): %s", e)
+            logger.error("Failed to connect MCP servers (will retry next message): %s", e)
             if self._mcp_stack:
                 try:
                     await self._mcp_stack.aclose()
@@ -248,7 +248,7 @@ class AgentLoop:
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logging.info("Tool call: {}({})", tool_call.name, args_str[:200])
+                    logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
@@ -258,7 +258,7 @@ class AgentLoop:
                 # Don't persist error responses to session history — they can
                 # poison the context and cause permanent 400 loops (#1303).
                 if response.finish_reason == "error":
-                    logging.error("LLM returned error: {}", (clean or "")[:200])
+                    logger.error(f"LLM returned error: {(clean or '')[:200]}")
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
                     break
                 messages = self.context.add_assistant_message(
@@ -271,7 +271,7 @@ class AgentLoop:
                 break
 
         if final_content is None and iteration >= self.max_iterations:
-            logging.warning("Max iterations ({}) reached", self.max_iterations)
+            logger.warning(f"Max iterations ({self.max_iterations}) reached")
             final_content = (
                 f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
                 "without completing the task. You can try breaking the task into smaller steps."
@@ -283,7 +283,7 @@ class AgentLoop:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
-        logging.info("Agent loop started")
+        logger.info("Agent loop started")
 
         while self._running:
             try:
@@ -359,10 +359,10 @@ class AgentLoop:
                         )
                     )
             except asyncio.CancelledError:
-                logging.info("Task cancelled for session {}", msg.session_key)
+                logger.info(f"Task cancelled for session {msg.session_key}")
                 raise
             except Exception:
-                logger.exception("Error processing message for session {}", msg.session_key)
+                logger.exception(f"Error processing message for session {msg.session_key}")
                 await self.bus.publish_outbound(
                     OutboundMessage(
                         channel=msg.channel,
@@ -383,7 +383,7 @@ class AgentLoop:
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
-        logging.info("Agent loop stopping")
+        logger.info("Agent loop stopping")
 
     async def _process_message(
         self,
@@ -397,7 +397,7 @@ class AgentLoop:
             channel, chat_id = (
                 msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
             )
-            logging.info("Processing system message from {}", msg.sender_id)
+            logger.info(f"Processing system message from {msg.sender_id}")
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
             await self.memory_consolidator.maybe_consolidate_by_tokens(session)
@@ -420,7 +420,7 @@ class AgentLoop:
             )
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logging.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
+        logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
@@ -436,7 +436,7 @@ class AgentLoop:
                         content="Memory archival failed, session not cleared. Please try again.",
                     )
             except Exception:
-                logger.exception("/new archival failed for {}", session.key)
+                logger.exception(f"/new archival failed for {session.key}")
                 return OutboundMessage(
                     channel=msg.channel,
                     chat_id=msg.chat_id,
@@ -507,7 +507,7 @@ class AgentLoop:
             return None
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logging.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
+        logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
