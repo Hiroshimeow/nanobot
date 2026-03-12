@@ -64,35 +64,53 @@ class SubagentManager:
         self,
         task: str,
         label: str | None = None,
+        parallel: bool = False,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
         session_key: str | None = None,
     ) -> str:
-        """Spawn a subagent to execute a task via the TaskQueue (Sequential)."""
-        from nanobot.task_queue import TaskQueue
+        """
+        Spawn a subagent to execute a task.
         
+        Args:
+            task: The task description.
+            label: A short label for the task.
+            parallel: If True, runs immediately in parallel. If False, queues in TaskQueue.
+            origin_channel: Originating channel.
+            origin_chat_id: Originating chat ID.
+            session_key: Optional session key for tracking.
+        """
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
-        
-        # Submit task to the global TaskQueue for sequential execution
-        tq = TaskQueue()
-        metadata = {
-            "message": task,
-            "channel": origin_channel,
-            "user_id": origin_chat_id,
-            "label": display_label,
-            "session_key": session_key or f"task:{task_id}"
-        }
-        
-        tq_id = tq.submit(
-            name="agent_task",
-            metadata=metadata,
-            user_id=origin_chat_id,
-            channel=origin_channel
-        )
-        
-        logger.info("Queued subagent task [{}]: {}", tq_id, display_label)
-        return f"Subagent [{display_label}] has been queued (ID: {tq_id}). It will run sequentially."
+        origin = {"channel": origin_channel, "chat_id": origin_chat_id}
+
+        if parallel:
+            # Parallel Execution (Immediate)
+            bg_task = asyncio.create_task(
+                self._run_subagent(task_id, task, display_label, origin)
+            )
+            self._running_tasks[task_id] = bg_task
+            logger.info("Spawned parallel subagent [{}]: {}", task_id, display_label)
+            return f"Subagent [{display_label}] started in PARALLEL (id: {task_id})."
+        else:
+            # Sequential Execution (TaskQueue)
+            from nanobot.task_queue import TaskQueue
+            tq = TaskQueue()
+            metadata = {
+                "message": task,
+                "channel": origin_channel,
+                "user_id": origin_chat_id,
+                "label": display_label,
+                "session_key": session_key or f"task:{task_id}"
+            }
+            tq_id = tq.submit(
+                name="agent_task",
+                metadata=metadata,
+                user_id=origin_chat_id,
+                channel=origin_channel
+            )
+            logger.info("Queued subagent task [{}]: {}", tq_id, display_label)
+            return f"Subagent [{display_label}] has been QUEUED (ID: {tq_id})."
 
     async def _run_subagent(
         self,
