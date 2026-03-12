@@ -26,15 +26,15 @@ class ExecTool(Tool):
         self.timeout = timeout
         self.working_dir = working_dir
         self.deny_patterns = deny_patterns or [
-            r"\brm\s+-[rf]{1,2}\b",          # rm -r, rm -rf, rm -fr
-            r"\bdel\s+/[fq]\b",              # del /f, del /q
-            r"\brmdir\s+/s\b",               # rmdir /s
-            r"(?:^|[;&|]\s*)format\b",       # format (as standalone command only)
-            r"\b(mkfs|diskpart)\b",          # disk operations
-            r"\bdd\s+if=",                   # dd
-            r">\s*/dev/sd",                  # write to disk
+            r"\brm\s+-[rf]{1,2}\b",  # rm -r, rm -rf, rm -fr
+            r"\bdel\s+/[fq]\b",  # del /f, del /q
+            r"\brmdir\s+/s\b",  # rmdir /s
+            r"(?:^|[;&|]\s*)format\b",  # format (as standalone command only)
+            r"\b(mkfs|diskpart)\b",  # disk operations
+            r"\bdd\s+if=",  # dd
+            r">\s*/dev/sd",  # write to disk
             r"\b(shutdown|reboot|poweroff)\b",  # system power
-            r":\(\)\s*\{.*\};\s*:",          # fork bomb
+            r":\(\)\s*\{.*\};\s*:",  # fork bomb
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
@@ -43,6 +43,9 @@ class ExecTool(Tool):
     @property
     def name(self) -> str:
         return "exec"
+
+    _MAX_TIMEOUT = 600
+    _MAX_OUTPUT = 10_000
 
     @property
     def description(self) -> str:
@@ -55,22 +58,39 @@ class ExecTool(Tool):
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "The shell command to execute",
                 },
                 "working_dir": {
                     "type": "string",
-                    "description": "Optional working directory for the command"
-                }
+                    "description": "Optional working directory for the command",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": (
+                        "Timeout in seconds. Increase for long-running commands "
+                        "like compilation or installation (default 60, max 600)."
+                    ),
+                    "minimum": 1,
+                    "maximum": 600,
+                },
             },
-            "required": ["command"]
+            "required": ["command"],
         }
-    
-    async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
+
+    async def execute(
+        self,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int | None = None,
+        **kwargs: Any,
+    ) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)
         if guard_error:
             return guard_error
-        
+
+        effective_timeout = min(timeout or self.timeout, self._MAX_TIMEOUT)
+
         env = os.environ.copy()
         if self.path_append:
             env["PATH"] = env.get("PATH", "") + os.pathsep + self.path_append
@@ -81,13 +101,9 @@ class ExecTool(Tool):
             # inherit the pipe handles and keep them open after the main
             # process exits.
             if sys.platform == "win32":
-                stdout, stderr, returncode = await self._run_with_tempfiles(
-                    command, cwd, env
-                )
+                stdout, stderr, returncode = await self._run_with_tempfiles(command, cwd, env)
             else:
-                stdout, stderr, returncode = await self._run_with_pipes(
-                    command, cwd, env
-                )
+                stdout, stderr, returncode = await self._run_with_pipes(command, cwd, env)
         except asyncio.TimeoutError:
             return f"Error: Command timed out after {self.timeout} seconds"
         except Exception as e:
@@ -163,14 +179,11 @@ class ExecTool(Tool):
                 cwd=cwd,
                 env=env,
             )
-            # Close our copies so only the child holds the handles.
-            os.close(fd_out)
-            fd_out = None
-            os.close(fd_err)
-            fd_err = None
-
             try:
-                await asyncio.wait_for(process.wait(), timeout=self.timeout)
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=effective_timeout,
+                )
             except asyncio.TimeoutError:
                 process.kill()
                 try:
@@ -217,7 +230,8 @@ class ExecTool(Tool):
 
             for raw in self._extract_absolute_paths(cmd):
                 try:
-                    p = Path(raw.strip()).resolve()
+                    expanded = os.path.expandvars(raw.strip())
+                    p = Path(expanded).expanduser().resolve()
                 except Exception:
                     continue
                 if p.is_absolute() and cwd_path not in p.parents and p != cwd_path:
@@ -227,6 +241,11 @@ class ExecTool(Tool):
 
     @staticmethod
     def _extract_absolute_paths(command: str) -> list[str]:
-        win_paths = re.findall(r"[A-Za-z]:\\[^\s\"'|><;]+", command)   # Windows: C:\...
-        posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", command) # POSIX: /absolute only
-        return win_paths + posix_paths
+        win_paths = re.findall(r"[A-Za-z]:\\[^\s\"'|><;]+", command)  # Windows: C:\...
+        posix_paths = re.findall(
+            r"(?:^|[\s|>'\"])(/[^\s\"'>;|<]+)", command
+        )  # POSIX: /absolute only
+        home_paths = re.findall(
+            r"(?:^|[\s|>'\"])(~[^\s\"'>;|<]*)", command
+        )  # POSIX/Windows home shortcut: ~
+        return win_paths + posix_paths + home_paths

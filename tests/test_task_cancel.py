@@ -19,11 +19,21 @@ def _make_loop():
     workspace = MagicMock()
     workspace.__truediv__ = MagicMock(return_value=MagicMock())
 
-    with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
+    with (
+        patch("nanobot.agent.loop.ContextBuilder"),
+        patch("nanobot.agent.loop.SessionManager"),
+        patch("nanobot.agent.loop.SubagentManager") as MockSubMgr,
+    ):
         MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
-        loop = AgentLoop(bus=bus, provider=provider, workspace=workspace)
+
+        main_cfg = {
+            "provider": provider,
+            "model": "test-model",
+            "max_tokens": 100,
+            "temperature": 0.1,
+            "reasoning_effort": None,
+        }
+        loop = AgentLoop(bus=bus, workspace=workspace, agent_config=main_cfg)
     return loop, bus
 
 
@@ -110,11 +120,11 @@ class TestDispatch:
         loop, bus = _make_loop()
         order = []
 
-        async def mock_process(m, **kwargs):
-            order.append(f"start-{m.content}")
+        async def mock_process(msg, session_key=None, on_progress=None):
+            order.append(f"start-{msg.content}")
             await asyncio.sleep(0.05)
-            order.append(f"end-{m.content}")
-            return OutboundMessage(channel="test", chat_id="c1", content=m.content)
+            order.append(f"end-{msg.content}")
+            return OutboundMessage(channel="test", chat_id="c1", content=msg.content)
 
         loop._process_message = mock_process
         msg1 = InboundMessage(channel="test", sender_id="u1", chat_id="c1", content="a")
@@ -166,81 +176,48 @@ class TestSubagentCancellation:
         mgr = SubagentManager(provider=provider, workspace=MagicMock(), bus=bus)
         assert await mgr.cancel_by_session("nonexistent") == 0
 
-
-class TestSubagentSpawnDedupe:
     @pytest.mark.asyncio
-    async def test_spawn_dedupes_same_task_within_session(self):
+    async def test_subagent_preserves_reasoning_fields_in_tool_turn(self, monkeypatch, tmp_path):
         from nanobot.agent.subagent import SubagentManager
         from nanobot.bus.queue import MessageBus
+        from nanobot.providers.base import LLMResponse, ToolCallRequest
 
         bus = MessageBus()
         provider = MagicMock()
         provider.get_default_model.return_value = "test-model"
-        mgr = SubagentManager(provider=provider, workspace=MagicMock(), bus=bus)
+        captured_second_call: list[dict] = []
 
-        started = asyncio.Event()
-        release = asyncio.Event()
+        call_count = {"n": 0}
 
-        async def fake_run(_task_id: str, _task: str, _label: str, _origin: dict[str, str]) -> None:
-            started.set()
-            await release.wait()
+        async def scripted_chat_with_retry(*, messages, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return LLMResponse(
+                    content="thinking",
+                    tool_calls=[ToolCallRequest(id="call_1", name="list_dir", arguments={})],
+                    reasoning_content="hidden reasoning",
+                    thinking_blocks=[{"type": "thinking", "thinking": "step"}],
+                )
+            captured_second_call[:] = messages
+            return LLMResponse(content="done", tool_calls=[])
 
-        with patch.object(mgr, "_run_subagent", side_effect=fake_run) as run_mock:
-            first = await mgr.spawn(
-                task="fetch news",
-                label="news_fetch",
-                origin_channel="telegram",
-                origin_chat_id="123",
-                session_key="telegram:123",
-            )
-            await started.wait()
-            second = await mgr.spawn(
-                task="fetch news",
-                label="news_fetch",
-                origin_channel="telegram",
-                origin_chat_id="123",
-                session_key="telegram:123",
-            )
+        provider.chat_with_retry = scripted_chat_with_retry
+        mgr = SubagentManager(provider=provider, workspace=tmp_path, bus=bus)
 
-            assert "started" in first
-            assert "already running" in second
-            assert run_mock.call_count == 1
-            assert mgr.get_running_count() == 1
+        async def fake_execute(self, name, arguments):
+            return "tool result"
 
-            release.set()
-            await asyncio.sleep(0)
+        monkeypatch.setattr("nanobot.agent.tools.registry.ToolRegistry.execute", fake_execute)
 
-    @pytest.mark.asyncio
-    async def test_spawn_allows_same_task_in_different_sessions(self):
-        from nanobot.agent.subagent import SubagentManager
-        from nanobot.bus.queue import MessageBus
+        await mgr._run_subagent("sub-1", "do task", "label", {"channel": "test", "chat_id": "c1"})
 
-        bus = MessageBus()
-        provider = MagicMock()
-        provider.get_default_model.return_value = "test-model"
-        mgr = SubagentManager(provider=provider, workspace=MagicMock(), bus=bus)
-
-        release = asyncio.Event()
-
-        async def fake_run(_task_id: str, _task: str, _label: str, _origin: dict[str, str]) -> None:
-            await release.wait()
-
-        with patch.object(mgr, "_run_subagent", side_effect=fake_run) as run_mock:
-            await mgr.spawn(
-                task="fetch news",
-                label="news_fetch",
-                origin_channel="telegram",
-                origin_chat_id="111",
-                session_key="telegram:111",
-            )
-            await mgr.spawn(
-                task="fetch news",
-                label="news_fetch",
-                origin_channel="telegram",
-                origin_chat_id="222",
-                session_key="telegram:222",
-            )
-
-            assert run_mock.call_count == 2
-            release.set()
-            await asyncio.sleep(0)
+        assistant_messages = [
+            msg
+            for msg in captured_second_call
+            if msg.get("role") == "assistant" and msg.get("tool_calls")
+        ]
+        assert len(assistant_messages) == 1
+        assert assistant_messages[0]["reasoning_content"] == "hidden reasoning"
+        assert assistant_messages[0]["thinking_blocks"] == [
+            {"type": "thinking", "thinking": "step"}
+        ]

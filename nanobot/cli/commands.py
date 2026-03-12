@@ -195,6 +195,8 @@ def onboard():
         save_config(Config())
         console.print(f"[green]✓[/green] Created config at {config_path}")
 
+    console.print("[dim]Config template now uses `maxTokens` + `contextWindowTokens`; `memoryWindow` is no longer a runtime setting.[/dim]")
+
     # Create workspace
     workspace = get_workspace_path()
 
@@ -227,6 +229,7 @@ class AgentRuntimeConfig(TypedDict):
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
     from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.providers.base import GenerationSettings
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.custom_provider import CustomProvider
 
@@ -251,11 +254,12 @@ def _create_provider(config: Config, model: str, provider: str | None = None):
 
     # OpenAI Codex (OAuth)
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
-        return OpenAICodexProvider(default_model=model)
-
+        provider = OpenAICodexProvider(default_model=model)
+    # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
     # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
     if provider_name == "custom":
-        return CustomProvider(
+        from nanobot.providers.custom_provider import CustomProvider
+        provider = CustomProvider(
             api_key=p.api_key if p else "no-key",
             api_base=config.get_api_base(model, provider) or "http://localhost:8000/v1",
             default_model=model,
@@ -269,13 +273,21 @@ def _create_provider(config: Config, model: str, provider: str | None = None):
         console.print("Set one in ~/.nanobot/config.json under providers section")
         raise typer.Exit(1)
 
-    return LiteLLMProvider(
+    provider = LiteLLMProvider(
         api_key=p.api_key if p else None,
         api_base=config.get_api_base(model, provider),
         default_model=model,
         extra_headers=p.extra_headers if p else None,
         provider_name=provider_name,
     )
+    
+    defaults = config.agents.defaults
+    provider.generation = GenerationSettings(
+        temperature=defaults.temperature,
+        max_tokens=defaults.max_tokens,
+        reasoning_effort=defaults.reasoning_effort,
+    )
+    return provider
 
 
 def _get_agent_config(config: Config, agent_cfg, shared_provider=None) -> AgentRuntimeConfig:
@@ -303,6 +315,16 @@ def _get_agent_config(config: Config, agent_cfg, shared_provider=None) -> AgentR
         "temperature": agent_cfg.temperature,
         "reasoning_effort": agent_cfg.reasoning_effort,
     }
+
+
+def _print_deprecated_memory_window_notice(config: Config) -> None:
+    """Warn when running with old memoryWindow-only config."""
+    if config.agents.defaults.should_warn_deprecated_memory_window:
+        console.print(
+            "[yellow]Hint:[/yellow] Detected deprecated `memoryWindow` without "
+            "`contextWindowTokens`. `memoryWindow` is ignored; run "
+            "[cyan]nanobot onboard[/cyan] to refresh your config template."
+        )
 
 
 # ============================================================================
@@ -336,6 +358,8 @@ def gateway(
     # Override workspace if provided
     if workspace:
         config.workspace_path = Path(workspace).expanduser().resolve()
+    _print_deprecated_memory_window_notice(config)
+    port = port if port is not None else config.gateway.port
 
     port = port if port is not None else config.gateway.port
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
@@ -360,9 +384,15 @@ def gateway(
     agent = AgentLoop(
         bus=bus,
         workspace=config.workspace_path,
+<<<<<<< HEAD
         agent_config=main_cfg,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
+=======
+        model=config.agents.defaults.model,
+        max_iterations=config.agents.defaults.max_tool_iterations,
+        context_window_tokens=config.agents.defaults.context_window_tokens,
+>>>>>>> upstream/main
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
@@ -518,6 +548,7 @@ def agent(
     from loguru import logger
 
     config = load_config()
+    _print_deprecated_memory_window_notice(config)
     sync_workspace_templates(config.workspace_path)
 
     bus = MessageBus()
@@ -696,6 +727,7 @@ app.add_typer(channels_app, name="channels")
 @channels_app.command("status")
 def channels_status():
     """Show channel status."""
+    from nanobot.channels.registry import discover_channel_names, load_channel_class
     from nanobot.config.loader import load_config
 
     config = load_config()
@@ -703,7 +735,6 @@ def channels_status():
     table = Table(title="Channel Status")
     table.add_column("Channel", style="cyan")
     table.add_column("Enabled", style="green")
-    table.add_column("Configuration", style="yellow")
 
     # WhatsApp
     wa = config.channels.whatsapp
