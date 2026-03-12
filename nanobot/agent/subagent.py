@@ -123,7 +123,10 @@ class SubagentManager:
         logger.info("Subagent [{}] starting task: {}", task_id, label)
 
         try:
-            # Build subagent tools (no message tool, no spawn tool)
+            # Build subagent tools (including spawn tool for autonomous chains)
+            from nanobot.agent.tools.spawn import SpawnTool
+            from nanobot.agent.tools.message import MessageTool
+            
             tools = ToolRegistry()
             allowed_dir = self.workspace if self.restrict_to_workspace else None
             tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
@@ -138,6 +141,15 @@ class SubagentManager:
             ))
             tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
             tools.register(WebFetchTool(proxy=self.web_proxy))
+            
+            # Enable subagents to spawn other subagents and send messages
+            spawn_tool = SpawnTool(manager=self)
+            spawn_tool.set_context(origin["channel"], origin["chat_id"])
+            tools.register(spawn_tool)
+            
+            message_tool = MessageTool(send_callback=self.bus.publish_outbound)
+            message_tool.set_context(origin["channel"], origin["chat_id"])
+            tools.register(message_tool)
             
             system_prompt = self._build_subagent_prompt()
             messages: list[dict[str, Any]] = [
